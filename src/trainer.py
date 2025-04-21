@@ -19,6 +19,8 @@ import math
 import pdb
 from accelerate import Accelerator
 from src.model import L2Wrap
+from transformers import is_datasets_available
+import datasets
 
 # import wandb  # comment this if you don't have wandb
 # print('logging to wandb... (comment it if you don\'t have wandb)')
@@ -53,11 +55,12 @@ class TrainerConfig:
 
 class Trainer:
 
-    def __init__(self, model, train_dataset, valid_dataset, test_dataset, config):
+    def __init__(self, model, train_dataset, valid_dataset, test_dataset, data_collator, config):
         self.model = model
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
         self.valid_dataset = valid_dataset
+        self.data_collator = data_collator
         self.config = config
         self.avg_loss = -1
         self.min_dev_loss = 100
@@ -82,6 +85,41 @@ class Trainer:
         run_name = str(cfg.vocab_size) + '-' + str(cfg.ctx_len) + '-' + \
                    cfg.model_type + '-' + str(cfg.n_layer) + '-' + str(cfg.n_embd)
         return run_name
+    
+    def _remove_unused_columns(self, dataset: "datasets.Dataset"):
+        
+        ignored_columns = ['text', 'attention_masks']
+        
+        return dataset.remove_columns(ignored_columns)
+    
+    def get_train_dataloader(self) -> DataLoader:
+        """
+        Returns the training [`~torch.utils.data.DataLoader`].
+
+        Will use no sampler if `train_dataset` does not implement `__len__`, a random sampler (adapted to distributed
+        training if necessary) otherwise.
+
+        Subclass and override this method if you want to inject some custom behavior.
+        """
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+
+        train_dataset = self.train_dataset
+        data_collator = self.data_collator        
+        train_dataset = self._remove_unused_columns(train_dataset)
+
+        # train_sampler = self._get_train_sampler()
+
+        return DataLoader(
+            train_dataset,
+            batch_size=self.config.batch_size,
+            # sampler=train_sampler,
+            collate_fn=data_collator,
+            # drop_last=self.args.dataloader_drop_last,
+            num_workers=self.config.num_workers
+            # pin_memory=self.args.dataloader_pin_memory,            
+            # worker_init_fn=seed_worker,
+        )
 
     def train(self):
         model, config = self.model, self.config
@@ -97,16 +135,13 @@ class Trainer:
                 data = self.valid_dataset
             # pdb.set_trace()
             model.train(is_train)
-            if config.num_workers > 0:
-                loader = DataLoader(data, shuffle=False, pin_memory=True,
-                                    batch_size=config.batch_size,
-                                    num_workers=config.num_workers)
-            else:
-                loader = DataLoader(data, shuffle=False,
-                                    batch_size=config.batch_size,
-                                    num_workers=config.num_workers)
+            train_dataloader = self.get_train_dataloader()
 
-            loader = accelerator.prepare(loader)
+            # for step, inputs in enumerate(train_dataloader):
+            #     inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            #     x, y = inputs['input_ids'], inputs['labels']
+                
+            loader = accelerator.prepare(train_dataloader)
             pbar = tqdm(enumerate(loader), total=len(
                 loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}',
                         disable=not accelerator.is_local_main_process) if is_train else enumerate(loader)
@@ -114,7 +149,8 @@ class Trainer:
             model.train(is_train)
             dev_loss_all = 0
 
-            for it, (x, y) in pbar:
+            for it, batch in pbar:
+                x, y = batch['input_ids'], batch['labels']  # Adjust keys based on your dataset structure                
                 # x = x.to(self.device)  # place data on the correct device
                 # y = y.to(self.device)
 

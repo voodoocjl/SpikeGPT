@@ -55,6 +55,11 @@ wkv_cuda = load(name="wkv", sources=["cuda/wkv_op.cpp", "cuda/wkv_cuda.cu"],
                 extra_cuda_cflags=['-res-usage', '--maxrregcount 60', '--use_fast_math', '-O3', '-Xptxas -O3',
                                    f'-DTmax={T_MAX}'])
 
+# wkv_cuda = load(name="wkv", sources=["cuda/wkv_op.cpp", "cuda/wkv_cuda.cu"],
+#                 verbose=True,
+#                 extra_cuda_cflags=['-res-usage', '--maxrregcount 60', '--use_fast_math', '-O3', '-Xptxas -O3',
+#                                    f'-DTmax={T_MAX}', '-gencode=arch=compute_80,code=sm_80'])
+
 
 class WKV(torch.autograd.Function):
     @staticmethod
@@ -420,7 +425,8 @@ class GPT(nn.Module):
         B, T = idx.size()
         assert T <= self.ctx_len, "Cannot forward, because len(input) > model ctx_len."
 
-        x = self.atan(self.emb(idx))
+        x = self.emb(idx)
+        x = self.atan(x)
         x = self.blocks(x)
         x = self.ln_out(x)
 
@@ -443,6 +449,8 @@ class GPT(nn.Module):
 
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(x.view(-1, x.size(-1)), targets.to(x.device).view(-1))
+            shift_logits = x[..., :-1, :].contiguous()
+            shift_labels = targets[..., 1:].contiguous()
+            loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.to(x.device).view(-1))
 
         return L2Wrap.apply(loss, x)
